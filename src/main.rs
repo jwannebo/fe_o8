@@ -178,22 +178,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             execute!(
                 stdout,
-                cursor::MoveTo(70, 5),
+                cursor::MoveTo(70 + 64, 5),
                 PrintStyledContent(style_number(0x1, keys)),
                 PrintStyledContent(style_number(0x2, keys)),
                 PrintStyledContent(style_number(0x3, keys)),
                 PrintStyledContent(style_number(0xC, keys)),
-                cursor::MoveTo(70, 6),
+                cursor::MoveTo(70 + 64, 6),
                 PrintStyledContent(style_number(0x4, keys)),
                 PrintStyledContent(style_number(0x5, keys)),
                 PrintStyledContent(style_number(0x6, keys)),
                 PrintStyledContent(style_number(0xD, keys)),
-                cursor::MoveTo(70, 7),
+                cursor::MoveTo(70 + 64, 7),
                 PrintStyledContent(style_number(0x7, keys)),
                 PrintStyledContent(style_number(0x8, keys)),
                 PrintStyledContent(style_number(0x9, keys)),
                 PrintStyledContent(style_number(0xE, keys)),
-                cursor::MoveTo(70, 8),
+                cursor::MoveTo(70 + 64, 8),
                 PrintStyledContent(style_number(0xA, keys)),
                 PrintStyledContent(style_number(0x0, keys)),
                 PrintStyledContent(style_number(0xB, keys)),
@@ -216,35 +216,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             //stdout.execute(Clear(terminal::ClearType::All))?;
             stdout
                 .execute(cursor::MoveTo(0, 2))?
-                .execute(Print(format!("╔{:═<64}╗", "")))?;
+                .execute(Print(format!("╔{:═<128}╗", "")))?;
 
             for line in chip8.display {
+                let output: String = format!("{:064b}", line)
+                    .chars()
+                    .map(|c| match c {
+                        '1' => "██",
+                        '0' => "░░",
+                        _ => "  ",
+                    })
+                    .collect();
                 stdout
                     .execute(cursor::MoveToNextLine(1))?
-                    .execute(Print::<String>(
-                        format!("║{:064b}║   ", line)
-                            .chars()
-                            .map(|c| match c {
-                                '1' => "██",
-                                '0' => "░░",
-                                _ => "  ",
-                            })
-                            .collect(),
-                    ))?;
+                    .execute(Print::<String>(format!("║{}║", output)))?;
             }
             stdout
                 .execute(cursor::MoveToNextLine(1))?
-                .execute(Print(format!("╚{:═<64}╝", "")))?;
+                .execute(Print(format!("╚{:═<128}╝", "")))?;
         }
         // Fetch
         let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
-        stdout.execute(cursor::MoveTo(0, 0))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        stdout.execute(Print(format!(
-            "{:02X}{:02X}",
-            chip8.memory[chip8.pc as usize],
-            chip8.memory[chip8.pc as usize + 1]
-        )))?;
+        // stdout.execute(cursor::MoveTo(0, 0))?;
+        // stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        // stdout.execute(Print(format!(
+        //     "{:02X}{:02X}",
+        //     chip8.memory[chip8.pc as usize],
+        //     chip8.memory[chip8.pc as usize + 1]
+        // )))?;
         chip8.pc += 2;
         // Decode and Execute
         match op {
@@ -656,7 +655,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             _ => panic!("Unknown operand! {0:?}", op),
         };
-        sleep(Duration::from_millis(150));
+        sleep(Duration::from_secs_f32(0.001));
     }
     terminal::disable_raw_mode()?;
     stdout.execute(terminal::LeaveAlternateScreen)?;
