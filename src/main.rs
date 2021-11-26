@@ -14,8 +14,7 @@ use std::{
     env,
     error::Error,
     fs::File,
-    io::prelude::*,
-    io::stdout,
+    io::{prelude::*, stdout, Stdout},
     path::Path,
     result::Result,
     thread::sleep,
@@ -68,6 +67,56 @@ fn style_number(number: u8, keys: [bool; 16]) -> StyledContent<String> {
         Color::Black
     };
     return format!("{:x}", number).with(color).on(background);
+}
+
+fn color_from_index(index: usize) -> Color {
+    match index {
+        0 => Color::AnsiValue(17),
+        1 => Color::AnsiValue(18),
+        2 => Color::AnsiValue(19),
+        3 => Color::AnsiValue(20),
+        4 => Color::AnsiValue(21),
+        _ => Color::AnsiValue(23),
+    }
+}
+
+fn print_memory<'std>(
+    c8: &Chip8,
+    stdout: &'std mut Stdout,
+) -> Result<&'std mut Stdout, Box<dyn Error>> {
+    for i in (0..(4096 - 32)).step_by(32) {
+        let rng = i..(i + 32);
+        let slice = &c8.memory[i as usize..i as usize + 32];
+        let mut color: Color;
+        let character = if rng.contains(&c8.pc) {
+            '╫'
+        } else if rng.contains(&c8.i) {
+            '┼'
+        } else if slice.iter().all(|n| *n == 0) {
+            ' '
+        } else if slice.iter().filter(|n| **n == 1).count() > 8 {
+            '─'
+        } else if slice.iter().filter(|n| **n == 1).count() > 16 {
+            '━'
+        } else if slice.iter().filter(|n| **n == 1).count() > 24 {
+            '═'
+        } else {
+            '┄'
+        };
+        if i < 0x200 {
+            color = Color::DarkYellow
+        } else {
+            color = Color::Black
+        }
+
+        for (j, addr) in c8.stack.iter().rev().enumerate() {
+            if rng.contains(&addr) {
+                color = color_from_index(j);
+            }
+        }
+        stdout.execute(PrintStyledContent(format!("{}", character).on(color)))?;
+    }
+    Ok(stdout)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -233,7 +282,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             stdout
                 .execute(cursor::MoveToNextLine(1))?
-                .execute(Print(format!("╚{:═<128}╝", "")))?;
+                .execute(Print(format!("╠{:═<128}╣", "")))?;
+
+            stdout
+                .execute(cursor::MoveToNextLine(1))?
+                .execute(Print("╙"))?;
+            print_memory(&chip8, &mut stdout)?;
+            stdout.execute(Print(" ╜"))?;
         }
         // Fetch
         let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
@@ -655,7 +710,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             _ => panic!("Unknown operand! {0:?}", op),
         };
-        sleep(Duration::from_secs_f32(0.001));
+        sleep(Duration::from_secs_f32(0.0001));
     }
     terminal::disable_raw_mode()?;
     stdout.execute(terminal::LeaveAlternateScreen)?;
