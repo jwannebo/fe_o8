@@ -1,8 +1,8 @@
 use crossterm::{
-    cursor, execute,
+    cursor, queue,
     style::{Color, Print, PrintStyledContent, StyledContent, Stylize},
     terminal::{self, Clear, ClearType, EnterAlternateScreen},
-    ExecutableCommand,
+    ExecutableCommand, QueueableCommand,
 };
 use keyboard_query;
 use rand::random;
@@ -71,12 +71,11 @@ fn style_number(number: u8, keys: [bool; 16]) -> StyledContent<String> {
 
 fn color_from_index(index: usize) -> Color {
     match index {
-        0 => Color::AnsiValue(17),
-        1 => Color::AnsiValue(18),
+        0 => Color::AnsiValue(21),
+        1 => Color::AnsiValue(20),
         2 => Color::AnsiValue(19),
-        3 => Color::AnsiValue(20),
-        4 => Color::AnsiValue(21),
-        _ => Color::AnsiValue(23),
+        3 => Color::AnsiValue(18),
+        _ => Color::AnsiValue(17),
     }
 }
 
@@ -104,7 +103,7 @@ fn print_memory<'std>(
             '┄'
         };
         if i < 0x200 {
-            color = Color::AnsiValue(136);
+            color = Color::Black;
         } else {
             color = Color::Reset;
         }
@@ -114,7 +113,7 @@ fn print_memory<'std>(
                 color = color_from_index(j);
             }
         }
-        stdout.execute(PrintStyledContent(format!("{}", character).on(color)))?;
+        stdout.queue(PrintStyledContent(format!("{}", character).on(color)))?;
     }
     Ok(stdout)
 }
@@ -201,13 +200,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         if last_time.elapsed().as_secs_f32() * 60.0 < 1.0 {
             sleep(Instant::now() - last_time);
         } else {
-            stdout
-                .execute(cursor::MoveTo(0, 0))?
-                .execute(Print(format!(
-                    "{:.1}fps {:.4}fpf",
-                    1.0 / last_time.elapsed().as_secs_f32(),
-                    last_time.elapsed().as_secs_f32() * 60.0
-                )))?;
+            stdout.queue(cursor::MoveTo(0, 0))?.queue(Print(format!(
+                "{:.1}fps {:.4}fpf",
+                1.0 / last_time.elapsed().as_secs_f32(),
+                last_time.elapsed().as_secs_f32() * 60.0
+            )))?;
             last_time = Instant::now();
             let last_keys = keys;
             keys = [false; 16];
@@ -235,7 +232,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
 
-            execute!(
+            queue!(
                 stdout,
                 cursor::MoveTo(70 + 64, 5),
                 PrintStyledContent(style_number(0x1, keys)),
@@ -274,8 +271,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             //stdout.execute(Clear(terminal::ClearType::All))?;
             stdout
-                .execute(cursor::MoveTo(0, 2))?
-                .execute(Print(format!("╔{:═<128}╗", "")))?;
+                .queue(cursor::MoveTo(0, 2))?
+                .queue(Print(format!("╔{:═<128}╗", "")))?;
 
             for line in chip8.display {
                 let output: String = format!("{:064b}", line)
@@ -287,20 +284,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     })
                     .collect();
                 stdout
-                    .execute(cursor::MoveToNextLine(1))?
-                    .execute(Print::<String>(format!("║{}║", output)))?;
+                    .queue(cursor::MoveToNextLine(1))?
+                    .queue(Print::<String>(format!("║{}║", output)))?;
             }
             stdout
-                .execute(cursor::MoveToNextLine(1))?
-                .execute(Print(format!("╠{:═<128}╣", "")))?;
+                .queue(cursor::MoveToNextLine(1))?
+                .queue(Print(format!("╠{:═<128}╣", "")))?;
 
-            stdout
-                .execute(cursor::MoveToNextLine(1))?
-                .execute(Print("╙"))?;
-            print_memory(&chip8, &mut stdout)?;
-            stdout.execute(Print("╜"))?;
+            stdout.queue(cursor::MoveToNextLine(1))?.queue(Print("╙"))?;
+            print_memory(&chip8, &mut stdout)?
+                .queue(Print("╜"))?
+                .flush()?;
 
-            for _ in 0..1 {
+            for _ in 0..12 {
                 // Fetch
                 let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
                 // stdout.execute(cursor::MoveTo(0, 0))?;
