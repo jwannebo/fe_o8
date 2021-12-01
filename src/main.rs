@@ -18,7 +18,7 @@ use std::{
     path::Path,
     result::Result,
     thread::sleep,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 struct Chip8 {
@@ -84,7 +84,7 @@ fn print_memory<'std>(
     c8: &Chip8,
     stdout: &'std mut Stdout,
 ) -> Result<&'std mut Stdout, Box<dyn Error>> {
-    for i in (0..(4096 - 32)).step_by(32) {
+    for i in (0..4096).step_by(32) {
         let rng = i..(i + 32);
         let slice = &c8.memory[i as usize..i as usize + 32];
         let mut color: Color;
@@ -104,9 +104,9 @@ fn print_memory<'std>(
             '┄'
         };
         if i < 0x200 {
-            color = Color::DarkYellow
+            color = Color::AnsiValue(136);
         } else {
-            color = Color::Black
+            color = Color::Reset;
         }
 
         for (j, addr) in c8.stack.iter().rev().enumerate() {
@@ -129,10 +129,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut stdout = stdout();
     let keyboard = keyboard_query::DeviceState::new();
 
+    terminal::enable_raw_mode()?;
     stdout
         .execute(EnterAlternateScreen)?
-        .execute(Clear(ClearType::All))?;
-    terminal::enable_raw_mode()?;
+        .execute(Clear(ClearType::All))?
+        .execute(cursor::Hide)?
+        .execute(cursor::DisableBlinking)?;
 
     //Initialize main memory
     let mut chip8 = Chip8 {
@@ -194,12 +196,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut last_time = Instant::now();
     let mut keys = [false; 16];
-    let mut last_keys = [false; 16];
 
     'exit: loop {
-        if last_time.elapsed().as_secs_f32() * 60.0 >= 1.0 {
+        if last_time.elapsed().as_secs_f32() * 60.0 < 1.0 {
+            sleep(Instant::now() - last_time);
+        } else {
+            stdout
+                .execute(cursor::MoveTo(0, 0))?
+                .execute(Print(format!(
+                    "{:.1}fps {:.4}fpf",
+                    1.0 / last_time.elapsed().as_secs_f32(),
+                    last_time.elapsed().as_secs_f32() * 60.0
+                )))?;
             last_time = Instant::now();
-            last_keys = keys;
+            let last_keys = keys;
             keys = [false; 16];
 
             for key in keyboard.query_keymap() {
@@ -288,429 +298,431 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .execute(cursor::MoveToNextLine(1))?
                 .execute(Print("╙"))?;
             print_memory(&chip8, &mut stdout)?;
-            stdout.execute(Print(" ╜"))?;
+            stdout.execute(Print("╜"))?;
+
+            for _ in 0..1 {
+                // Fetch
+                let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
+                // stdout.execute(cursor::MoveTo(0, 0))?;
+                // stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+                // stdout.execute(Print(format!(
+                //     "{:02X}{:02X}",
+                //     chip8.memory[chip8.pc as usize],
+                //     chip8.memory[chip8.pc as usize + 1]
+                // )))?;
+                chip8.pc += 2;
+                // Decode and Execute
+                match op {
+                    Opcode {
+                        n0: 0x0,
+                        n1: 0x0,
+                        n2: 0xE,
+                        n3: 0x0,
+                        a: _,
+                        v: _,
+                    } => chip8.display = [0; 32], // CLR
+                    Opcode {
+                        n0: 0x0,
+                        n1: 0x0,
+                        n2: 0xE,
+                        n3: 0xE,
+                        a: _,
+                        v: _,
+                    } => chip8.pc = chip8.stack.pop().unwrap(), // RTN
+                    Opcode {
+                        n0: 0x1,
+                        n1: _,
+                        n2: _,
+                        n3: _,
+                        a: nnn,
+                        v: _,
+                    } => chip8.pc = nnn, // JMP
+                    Opcode {
+                        n0: 0x2,
+                        n1: _,
+                        n2: _,
+                        n3: _,
+                        a: nnn,
+                        v: _,
+                    } => {
+                        chip8.stack.push(chip8.pc);
+                        chip8.pc = nnn;
+                    } // CAL
+                    Opcode {
+                        n0: 0x3,
+                        n1: x,
+                        n2: _,
+                        n3: _,
+                        a: _,
+                        v: nn,
+                    } => {
+                        let x = x as usize;
+                        if chip8.v[x] == nn {
+                            chip8.pc += 2
+                        }
+                    } // SEQ
+                    Opcode {
+                        n0: 0x4,
+                        n1: x,
+                        n2: _,
+                        n3: _,
+                        a: _,
+                        v: nn,
+                    } => {
+                        let x = x as usize;
+                        if chip8.v[x] != nn {
+                            chip8.pc += 2
+                        }
+                    } // SNE
+                    Opcode {
+                        n0: 0x5,
+                        n1: x,
+                        n2: y,
+                        n3: 0x0,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        if chip8.v[x] == chip8.v[y] {
+                            chip8.pc += 2
+                        }
+                    } // SER
+                    Opcode {
+                        n0: 0x6,
+                        n1: x,
+                        n2: _,
+                        n3: _,
+                        a: _,
+                        v: nn,
+                    } => chip8.v[x as usize] = nn, // CAN
+                    Opcode {
+                        n0: 0x7,
+                        n1: x,
+                        n2: _,
+                        n3: _,
+                        a: _,
+                        v: nn,
+                    } => {
+                        let x = x as usize;
+                        let (value, ..) = chip8.v[x].overflowing_add(nn);
+                        chip8.v[x] = value;
+                    } // CAD
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x0,
+                        a: _,
+                        v: _,
+                    } => chip8.v[x as usize] = chip8.v[y as usize], // ASN
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x1,
+                        a: _,
+                        v: _,
+                    } => chip8.v[x as usize] |= chip8.v[y as usize], // ORR
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x2,
+                        a: _,
+                        v: _,
+                    } => chip8.v[x as usize] &= chip8.v[y as usize], // AND
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x3,
+                        a: _,
+                        v: _,
+                    } => chip8.v[x as usize] ^= chip8.v[y as usize], // XOR
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x4,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let (value, carry) = chip8.v[x].overflowing_add(chip8.v[y]);
+                        chip8.v[x] = value;
+                        chip8.v[0xF] = carry as u8;
+                    } // ADD
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x5,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let (value, carry) = chip8.v[x].overflowing_sub(chip8.v[y]);
+                        chip8.v[x] = value;
+                        chip8.v[0xF] = !carry as u8;
+                    } // SXY
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x6,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let (value, carry) = chip8.v[y].overflowing_shr(1);
+                        chip8.v[x] = value;
+                        chip8.v[0xF] = carry as u8;
+                    } // RSH
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0x7,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let (value, carry) = chip8.v[y].overflowing_sub(chip8.v[x]);
+                        chip8.v[x] = value;
+                        chip8.v[0xF] = !carry as u8;
+                    } // SYX
+                    Opcode {
+                        n0: 0x8,
+                        n1: x,
+                        n2: y,
+                        n3: 0xE,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let (value, carry) = chip8.v[y].overflowing_shl(1);
+                        chip8.v[x] = value;
+                        chip8.v[0xF] = carry as u8;
+                    } // LSH
+                    Opcode {
+                        n0: 0x9,
+                        n1: x,
+                        n2: y,
+                        n3: 0x0,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        if chip8.v[x] != chip8.v[y] {
+                            chip8.pc += 2
+                        }
+                    } // SNR
+                    Opcode {
+                        n0: 0xA,
+                        n1: _,
+                        n2: _,
+                        n3: _,
+                        a: nnn,
+                        v: _,
+                    } => chip8.i = nnn, // CAI
+                    Opcode {
+                        n0: 0xB,
+                        n1: _,
+                        n2: _,
+                        n3: _,
+                        a: nnn,
+                        v: _,
+                    } => chip8.pc = nnn + chip8.v[0] as u16, // J0N
+                    Opcode {
+                        n0: 0xC,
+                        n1: x,
+                        n2: _,
+                        n3: _,
+                        a: _,
+                        v: nn,
+                    } => chip8.v[x as usize] = random::<u8>() & nn, // RND
+                    Opcode {
+                        n0: 0xD,
+                        n1: x,
+                        n2: y,
+                        n3: n,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let y = y as usize;
+                        let coord_x = chip8.v[x] % 64;
+                        let mut coord_y = chip8.v[y] as usize % 32;
+                        chip8.v[0xF] = 0;
+                        let mut i = chip8.i as usize;
+                        let imax = i + n as u16 as usize;
+                        while coord_y < 32 && i < imax {
+                            // Operate on a u128, with 32 bits of padding to avoid overlfow
+
+                            // First, put the sprite at coord 0 (bit 32) by lshifting it 32 (pad) + 64 (screen width) - 8 (byte width)
+                            // 00000000000000000000000000000000|SSSSSSSS00000000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
+                            let sprite = (chip8.memory[i] as u128) << 32 + 64 - 8;
+
+                            // Then rshift it to it's proper x position
+                            // 00000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
+                            //                                 |x-|
+                            let sprite = sprite >> coord_x;
+
+                            // Then do an overflow aware rshift of 32 to squish the display 64 into the lower 64
+                            //0000000000000000000000000000000000000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000
+                            let (mask, _) = sprite.overflowing_shr(32);
+
+                            //Then grab only the 64 bits we care about
+                            //000SSSSSSSS00000000000000000000000000000000000000000000000000000
+                            let mask = (mask & 0xFFFF_FFFF__FFFF_FFFF) as u64;
+
+                            chip8.v[0xF] = if mask & chip8.display[coord_y] > 0 {
+                                0x1
+                            } else {
+                                0x0
+                            };
+                            chip8.display[coord_y] ^= mask;
+
+                            coord_y += 1;
+                            i += 1;
+                        }
+                    } // DRW
+                    Opcode {
+                        n0: 0xE,
+                        n1: x,
+                        n2: 0x9,
+                        n3: 0xE,
+                        a: _,
+                        v: _,
+                    } => {
+                        if keys[chip8.v[x as usize] as usize & 0x0F] {
+                            chip8.pc += 2;
+                        }
+                    } // KYP
+                    Opcode {
+                        n0: 0xE,
+                        n1: x,
+                        n2: 0xA,
+                        n3: 0x1,
+                        a: _,
+                        v: _,
+                    } => {
+                        if !keys[chip8.v[x as usize] as usize & 0x0F] {
+                            chip8.pc += 2;
+                        }
+                    } // KYR
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x0,
+                        n3: 0x7,
+                        a: _,
+                        v: _,
+                    } => chip8.v[x as usize] = chip8.delay, // DLX
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x0,
+                        n3: 0xA,
+                        a: _,
+                        v: _,
+                    } => {
+                        chip8.pc -= 2;
+                        'char: for k in 0x0..=0xF {
+                            if last_keys[k] && (last_keys[k] ^ keys[k]) {
+                                chip8.v[x as usize] = k as u8;
+                                chip8.pc += 2;
+                                break 'char;
+                            }
+                        }
+                    } // BKY
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x1,
+                        n3: 0x5,
+                        a: _,
+                        v: _,
+                    } => chip8.delay = chip8.v[x as usize], // DYS
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x1,
+                        n3: 0x8,
+                        a: _,
+                        v: _,
+                    } => chip8.sound = chip8.v[x as usize], // SND
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x1,
+                        n3: 0xE,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let value = chip8.i + chip8.v[x] as u16;
+                        chip8.v[0xF] = (value & 0xF000 > 0) as u8;
+                        chip8.i = value;
+                    } // ADI
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x2,
+                        n3: 0x9,
+                        a: _,
+                        v: _,
+                    } => chip8.i = font_addr[chip8.v[x as usize] as usize & 0x0F], // RCH
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x3,
+                        n3: 0x3,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let i = chip8.i as usize;
+                        chip8.memory[i + 0] = chip8.v[x] / 100;
+                        chip8.memory[i + 1] = (chip8.v[x] % 100) / 10;
+                        chip8.memory[i + 2] = chip8.v[x] % 10;
+                    } // BCD
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x5,
+                        n3: 0x5,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let i = chip8.i as usize;
+                        chip8.memory[i..=i + x].copy_from_slice(&chip8.v[0..=x])
+                    } // RST
+                    Opcode {
+                        n0: 0xF,
+                        n1: x,
+                        n2: 0x6,
+                        n3: 0x5,
+                        a: _,
+                        v: _,
+                    } => {
+                        let x = x as usize;
+                        let i = chip8.i as usize;
+                        chip8.v[0..=x].copy_from_slice(&chip8.memory[i..=i + x])
+                    } // RLD
+
+                    _ => panic!("Unknown operand! {0:?}", op),
+                };
+            }
         }
-        // Fetch
-        let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
-        // stdout.execute(cursor::MoveTo(0, 0))?;
-        // stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        // stdout.execute(Print(format!(
-        //     "{:02X}{:02X}",
-        //     chip8.memory[chip8.pc as usize],
-        //     chip8.memory[chip8.pc as usize + 1]
-        // )))?;
-        chip8.pc += 2;
-        // Decode and Execute
-        match op {
-            Opcode {
-                n0: 0x0,
-                n1: 0x0,
-                n2: 0xE,
-                n3: 0x0,
-                a: _,
-                v: _,
-            } => chip8.display = [0; 32], // CLR
-            Opcode {
-                n0: 0x0,
-                n1: 0x0,
-                n2: 0xE,
-                n3: 0xE,
-                a: _,
-                v: _,
-            } => chip8.pc = chip8.stack.pop().unwrap(), // RTN
-            Opcode {
-                n0: 0x1,
-                n1: _,
-                n2: _,
-                n3: _,
-                a: nnn,
-                v: _,
-            } => chip8.pc = nnn, // JMP
-            Opcode {
-                n0: 0x2,
-                n1: _,
-                n2: _,
-                n3: _,
-                a: nnn,
-                v: _,
-            } => {
-                chip8.stack.push(chip8.pc);
-                chip8.pc = nnn;
-            } // CAL
-            Opcode {
-                n0: 0x3,
-                n1: x,
-                n2: _,
-                n3: _,
-                a: _,
-                v: nn,
-            } => {
-                let x = x as usize;
-                if chip8.v[x] == nn {
-                    chip8.pc += 2
-                }
-            } // SEQ
-            Opcode {
-                n0: 0x4,
-                n1: x,
-                n2: _,
-                n3: _,
-                a: _,
-                v: nn,
-            } => {
-                let x = x as usize;
-                if chip8.v[x] != nn {
-                    chip8.pc += 2
-                }
-            } // SNE
-            Opcode {
-                n0: 0x5,
-                n1: x,
-                n2: y,
-                n3: 0x0,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                if chip8.v[x] == chip8.v[y] {
-                    chip8.pc += 2
-                }
-            } // SER
-            Opcode {
-                n0: 0x6,
-                n1: x,
-                n2: _,
-                n3: _,
-                a: _,
-                v: nn,
-            } => chip8.v[x as usize] = nn, // CAN
-            Opcode {
-                n0: 0x7,
-                n1: x,
-                n2: _,
-                n3: _,
-                a: _,
-                v: nn,
-            } => {
-                let x = x as usize;
-                let (value, ..) = chip8.v[x].overflowing_add(nn);
-                chip8.v[x] = value;
-            } // CAD
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x0,
-                a: _,
-                v: _,
-            } => chip8.v[x as usize] = chip8.v[y as usize], // ASN
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x1,
-                a: _,
-                v: _,
-            } => chip8.v[x as usize] |= chip8.v[y as usize], // ORR
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x2,
-                a: _,
-                v: _,
-            } => chip8.v[x as usize] &= chip8.v[y as usize], // AND
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x3,
-                a: _,
-                v: _,
-            } => chip8.v[x as usize] ^= chip8.v[y as usize], // XOR
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x4,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let (value, carry) = chip8.v[x].overflowing_add(chip8.v[y]);
-                chip8.v[x] = value;
-                chip8.v[0xF] = carry as u8;
-            } // ADD
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x5,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let (value, carry) = chip8.v[x].overflowing_sub(chip8.v[y]);
-                chip8.v[x] = value;
-                chip8.v[0xF] = !carry as u8;
-            } // SXY
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x6,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let (value, carry) = chip8.v[y].overflowing_shr(1);
-                chip8.v[x] = value;
-                chip8.v[0xF] = carry as u8;
-            } // RSH
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0x7,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let (value, carry) = chip8.v[y].overflowing_sub(chip8.v[x]);
-                chip8.v[x] = value;
-                chip8.v[0xF] = !carry as u8;
-            } // SYX
-            Opcode {
-                n0: 0x8,
-                n1: x,
-                n2: y,
-                n3: 0xE,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let (value, carry) = chip8.v[y].overflowing_shl(1);
-                chip8.v[x] = value;
-                chip8.v[0xF] = carry as u8;
-            } // LSH
-            Opcode {
-                n0: 0x9,
-                n1: x,
-                n2: y,
-                n3: 0x0,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                if chip8.v[x] != chip8.v[y] {
-                    chip8.pc += 2
-                }
-            } // SNR
-            Opcode {
-                n0: 0xA,
-                n1: _,
-                n2: _,
-                n3: _,
-                a: nnn,
-                v: _,
-            } => chip8.i = nnn, // CAI
-            Opcode {
-                n0: 0xB,
-                n1: _,
-                n2: _,
-                n3: _,
-                a: nnn,
-                v: _,
-            } => chip8.pc = nnn + chip8.v[0] as u16, // J0N
-            Opcode {
-                n0: 0xC,
-                n1: x,
-                n2: _,
-                n3: _,
-                a: _,
-                v: nn,
-            } => chip8.v[x as usize] = random::<u8>() & nn, // RND
-            Opcode {
-                n0: 0xD,
-                n1: x,
-                n2: y,
-                n3: n,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let y = y as usize;
-                let coord_x = chip8.v[x] % 64;
-                let mut coord_y = chip8.v[y] as usize % 32;
-                chip8.v[0xF] = 0;
-                let mut i = chip8.i as usize;
-                let imax = i + n as u16 as usize;
-                while coord_y < 32 && i < imax {
-                    // Operate on a u128, with 32 bits of padding to avoid overlfow
-
-                    // First, put the sprite at coord 0 (bit 32) by lshifting it 32 (pad) + 64 (screen width) - 8 (byte width)
-                    // 00000000000000000000000000000000|SSSSSSSS00000000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
-                    let sprite = (chip8.memory[i] as u128) << 32 + 64 - 8;
-
-                    // Then rshift it to it's proper x position
-                    // 00000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
-                    //                                 |x-|
-                    let sprite = sprite >> coord_x;
-
-                    // Then do an overflow aware rshift of 32 to squish the display 64 into the lower 64
-                    //0000000000000000000000000000000000000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000
-                    let (mask, _) = sprite.overflowing_shr(32);
-
-                    //Then grab only the 64 bits we care about
-                    //000SSSSSSSS00000000000000000000000000000000000000000000000000000
-                    let mask = (mask & 0xFFFF_FFFF__FFFF_FFFF) as u64;
-
-                    chip8.v[0xF] = if mask & chip8.display[coord_y] > 0 {
-                        0x1
-                    } else {
-                        0x0
-                    };
-                    chip8.display[coord_y] ^= mask;
-
-                    coord_y += 1;
-                    i += 1;
-                }
-            } // DRW
-            Opcode {
-                n0: 0xE,
-                n1: x,
-                n2: 0x9,
-                n3: 0xE,
-                a: _,
-                v: _,
-            } => {
-                if keys[chip8.v[x as usize] as usize & 0x0F] {
-                    chip8.pc += 2;
-                }
-            } // KYP
-            Opcode {
-                n0: 0xE,
-                n1: x,
-                n2: 0xA,
-                n3: 0x1,
-                a: _,
-                v: _,
-            } => {
-                if !keys[chip8.v[x as usize] as usize & 0x0F] {
-                    chip8.pc += 2;
-                }
-            } // KYR
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x0,
-                n3: 0x7,
-                a: _,
-                v: _,
-            } => chip8.v[x as usize] = chip8.delay, // DLX
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x0,
-                n3: 0xA,
-                a: _,
-                v: _,
-            } => {
-                chip8.pc -= 2;
-                'char: for k in 0x0..=0xF {
-                    if last_keys[k] && (last_keys[k] ^ keys[k]) {
-                        chip8.v[x as usize] = k as u8;
-                        chip8.pc += 2;
-                        break 'char;
-                    }
-                }
-            } // BKY
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x1,
-                n3: 0x5,
-                a: _,
-                v: _,
-            } => chip8.delay = chip8.v[x as usize], // DYS
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x1,
-                n3: 0x8,
-                a: _,
-                v: _,
-            } => chip8.sound = chip8.v[x as usize], // SND
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x1,
-                n3: 0xE,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let value = chip8.i + chip8.v[x] as u16;
-                chip8.v[0xF] = (value & 0xF000 > 0) as u8;
-                chip8.i = value;
-            } // ADI
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x2,
-                n3: 0x9,
-                a: _,
-                v: _,
-            } => chip8.i = font_addr[chip8.v[x as usize] as usize & 0x0F], // RCH
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x3,
-                n3: 0x3,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let i = chip8.i as usize;
-                chip8.memory[i + 0] = chip8.v[x] / 100;
-                chip8.memory[i + 1] = (chip8.v[x] % 100) / 10;
-                chip8.memory[i + 2] = chip8.v[x] % 10;
-            } // BCD
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x5,
-                n3: 0x5,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let i = chip8.i as usize;
-                chip8.memory[i..=i + x].copy_from_slice(&chip8.v[0..=x])
-            } // RST
-            Opcode {
-                n0: 0xF,
-                n1: x,
-                n2: 0x6,
-                n3: 0x5,
-                a: _,
-                v: _,
-            } => {
-                let x = x as usize;
-                let i = chip8.i as usize;
-                chip8.v[0..=x].copy_from_slice(&chip8.memory[i..=i + x])
-            } // RLD
-
-            _ => panic!("Unknown operand! {0:?}", op),
-        };
-        sleep(Duration::from_secs_f32(0.0001));
     }
     terminal::disable_raw_mode()?;
     stdout.execute(terminal::LeaveAlternateScreen)?;
