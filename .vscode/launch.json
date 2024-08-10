@@ -20,7 +20,9 @@
                 }
             },
             "args": [
-                "/home/qwert/Downloads/UFO"
+                "roms/4-flags.ch8",
+                ">2",
+                "/dev/null"
             ],
             "cwd": "${workspaceFolder}"
         },
@@ -40,7 +42,9 @@
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": [
+                "roms/test_opcode.ch8"
+            ],
             "cwd": "${workspaceFolder}"
         }
     ]

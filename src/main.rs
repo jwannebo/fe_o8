@@ -1,10 +1,10 @@
 use crossterm::{
-    cursor, queue,
-    style::{Color, Print, PrintStyledContent, StyledContent, Stylize},
-    terminal::{self, Clear, ClearType, EnterAlternateScreen},
-    ExecutableCommand, QueueableCommand,
+    cursor, execute, queue,
+    style::{Color, Print, PrintStyledContent, ResetColor, StyledContent, Stylize},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    QueueableCommand,
 };
-use keyboard_query;
+use evdev::Key;
 use rand::random;
 use rodio::{
     source::{SineWave, Source},
@@ -21,8 +21,13 @@ use std::{
     time::Instant,
 };
 
+static VAR_AND_DISPLAY_REFRESH_SIZE: u16 = 352;
+static MEMORY_SIZE: u16 = 0x1000;
+static ADDR_START_PROGRAM: u16 = 0x200;
+static ADDR_PROGRAM_END: u16 = MEMORY_SIZE - VAR_AND_DISPLAY_REFRESH_SIZE;
+
 struct Chip8 {
-    memory: [u8; 4096],
+    memory: [u8; 0x1000],
     display: [u64; 32],
     pc: u16,
     stack: Vec<u16>,
@@ -66,7 +71,7 @@ fn style_number(number: u8, keys: [bool; 16]) -> StyledContent<String> {
     } else {
         Color::Black
     };
-    return format!("{:x}", number).with(color).on(background);
+    format!("{:x}", number).with(color).on(background)
 }
 
 fn color_from_index(index: usize) -> Color {
@@ -83,33 +88,25 @@ fn print_memory<'std>(
     c8: &Chip8,
     stdout: &'std mut Stdout,
 ) -> Result<&'std mut Stdout, Box<dyn Error>> {
-    for i in (0..4096).step_by(32) {
+    for i in (0..MEMORY_SIZE).step_by(32) {
         let rng = i..(i + 32);
-        let slice = &c8.memory[i as usize..i as usize + 32];
         let mut color: Color;
-        let character = if rng.contains(&c8.pc) {
-            '╫'
+        let mut character = if rng.contains(&c8.pc) {
+            'P'
         } else if rng.contains(&c8.i) {
-            '┼'
-        } else if slice.iter().all(|n| *n == 0) {
-            ' '
-        } else if slice.iter().filter(|n| **n == 1).count() > 8 {
-            '─'
-        } else if slice.iter().filter(|n| **n == 1).count() > 16 {
-            '━'
-        } else if slice.iter().filter(|n| **n == 1).count() > 24 {
-            '═'
+            'i'
         } else {
             '┄'
         };
-        if i < 0x200 {
+        if i < ADDR_START_PROGRAM {
             color = Color::Black;
         } else {
             color = Color::Reset;
         }
 
         for (j, addr) in c8.stack.iter().rev().enumerate() {
-            if rng.contains(&addr) {
+            if rng.contains(addr) {
+                character = 's';
                 color = color_from_index(j);
             }
         }
@@ -118,78 +115,145 @@ fn print_memory<'std>(
     Ok(stdout)
 }
 
+struct DeviceWrapper(evdev::Device);
+
+impl Drop for DeviceWrapper {
+    fn drop(&mut self) {
+        _ = self.0.ungrab();
+        _ = terminal::disable_raw_mode();
+        _ = execute!(
+            stdout(),
+            LeaveAlternateScreen,
+            Clear(ClearType::All),
+            cursor::RestorePosition,
+            cursor::EnableBlinking,
+            cursor::Show
+        );
+    }
+}
+
+static REQUIRED_KEYS: [Key; 17] = [
+    Key::KEY_ESC,
+    Key::KEY_X,
+    Key::KEY_1,
+    Key::KEY_2,
+    Key::KEY_3,
+    Key::KEY_Q,
+    Key::KEY_W,
+    Key::KEY_E,
+    Key::KEY_A,
+    Key::KEY_S,
+    Key::KEY_D,
+    Key::KEY_Z,
+    Key::KEY_C,
+    Key::KEY_4,
+    Key::KEY_R,
+    Key::KEY_F,
+    Key::KEY_V,
+];
+static FONT_ARR: [u8; 16 * 5] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+];
+static FONT_ADDR: [u16; 16] = [
+    0x050, // 0
+    0x055, // 1
+    0x05A, // 2
+    0x05F, // 3
+    0x064, // 4
+    0x069, // 5
+    0x06E, // 6
+    0x073, // 7
+    0x078, // 8
+    0x07D, // 9
+    0x082, // A
+    0x087, // B
+    0x08C, // C
+    0x091, // D
+    0x096, // E
+    0x09A, // F
+];
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
-    let path = Path::new(&args[1]);
-    //let path = Path::new("/home/qwert/Downloads/IBM Logo.ch8");
-    //let path = Path::new("/home/qwert/Downloads/test_opcode.ch8");
-    let mut file = File::open(path)?;
+    // Get keyboard
+
+    let devices = evdev::enumerate().map(|t| t.1).collect::<Vec<_>>();
+    let mut device = DeviceWrapper(
+        devices
+            .into_iter()
+            .find(|d| {
+                if let Some(supported) = d.supported_keys() {
+                    REQUIRED_KEYS.iter().all(|k| supported.contains(*k))
+                } else {
+                    false
+                }
+            })
+            .expect("Could not find keyboard device supporting required keys"),
+    );
+
+    // Setup Display
 
     let mut stdout = stdout();
-    let keyboard = keyboard_query::DeviceState::new();
-
     terminal::enable_raw_mode()?;
-    stdout
-        .execute(EnterAlternateScreen)?
-        .execute(Clear(ClearType::All))?
-        .execute(cursor::Hide)?
-        .execute(cursor::DisableBlinking)?;
+    device.0.grab()?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        Clear(ClearType::All),
+        cursor::Hide,
+        cursor::DisableBlinking,
+        cursor::SavePosition
+    )?;
+
+    // Open file
+
+    let args: Vec<String> = env::args().collect();
+    let path = Path::new(&args[1]);
+    let file = File::open(path)?;
 
     //Initialize main memory
+
     let mut chip8 = Chip8 {
-        memory: [0; 4096],
+        memory: [0; 0x1000],
         display: [0; 32],
-        pc: 0x200,
+        pc: ADDR_START_PROGRAM,
         stack: vec![],
         delay: 0x0,
         sound: 0x0,
         v: [0; 16],
         i: 0x0,
     };
-    let font_arr = [
-        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-        0x20, 0x60, 0x20, 0x20, 0x70, // 1
-        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80, // F
-    ];
-    let font_addr: [u16; 16] = [
-        0x050, // 0
-        0x055, // 1
-        0x05A, // 2
-        0x05F, // 3
-        0x064, // 4
-        0x069, // 5
-        0x06E, // 6
-        0x073, // 7
-        0x078, // 8
-        0x07D, // 9
-        0x082, // A
-        0x087, // B
-        0x08C, // C
-        0x091, // D
-        0x096, // E
-        0x09A, // F
-    ];
-    chip8.memory[0x050..0x0A0].copy_from_slice(&font_arr);
 
-    file.read(&mut chip8.memory[0x200..])?;
+    chip8.memory[0x050..0x0A0].copy_from_slice(&FONT_ARR);
+
+    if let Err(e) = file
+        .take((ADDR_PROGRAM_END - ADDR_START_PROGRAM) as u64)
+        .read_exact(&mut chip8.memory[ADDR_START_PROGRAM as usize..ADDR_PROGRAM_END as usize])
+    {
+        if e.kind() != std::io::ErrorKind::UnexpectedEof {
+            return Err(Box::new(e));
+        }
+    }
 
     //Set up sound
+
     let (_stream, stream_handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&stream_handle)?;
-    let beep = SineWave::new(440).amplify(0.20);
+    let beep = SineWave::new(440.0).amplify(0.8);
     sink.append(beep);
     sink.pause();
 
@@ -209,25 +273,29 @@ fn main() -> Result<(), Box<dyn Error>> {
             let last_keys = keys;
             keys = [false; 16];
 
-            for key in keyboard.query_keymap() {
+            for key in &device
+                .0
+                .get_key_state()
+                .expect("Chosen device should be a keyboard")
+            {
                 match key {
-                    0x77 => break 'exit,      // Pause/Break
-                    0x2D => keys[0x0] = true, // 1
-                    0x02 => keys[0x1] = true, // 2
-                    0x03 => keys[0x2] = true, // 3
-                    0x04 => keys[0x3] = true, // 4
-                    0x10 => keys[0x4] = true, // q
-                    0x11 => keys[0x5] = true, // w
-                    0x12 => keys[0x6] = true, // e
-                    0x1E => keys[0x7] = true, // r
-                    0x1F => keys[0x8] = true, // a
-                    0x20 => keys[0x9] = true, // s
-                    0x2C => keys[0xA] = true, // d
-                    0x2E => keys[0xB] = true, // f
-                    0x05 => keys[0xC] = true, // z
-                    0x13 => keys[0xD] = true, // x
-                    0x21 => keys[0xE] = true, // c
-                    0x2F => keys[0xF] = true, // v
+                    Key::KEY_ESC | Key::KEY_PAUSE => break 'exit,
+                    Key::KEY_X => keys[0x0] = true,
+                    Key::KEY_1 => keys[0x1] = true,
+                    Key::KEY_2 => keys[0x2] = true,
+                    Key::KEY_3 => keys[0x3] = true,
+                    Key::KEY_Q => keys[0x4] = true,
+                    Key::KEY_W => keys[0x5] = true,
+                    Key::KEY_E => keys[0x6] = true,
+                    Key::KEY_A => keys[0x7] = true,
+                    Key::KEY_S => keys[0x8] = true,
+                    Key::KEY_D => keys[0x9] = true,
+                    Key::KEY_Z => keys[0xA] = true,
+                    Key::KEY_C => keys[0xB] = true,
+                    Key::KEY_4 => keys[0xC] = true,
+                    Key::KEY_R => keys[0xD] = true,
+                    Key::KEY_F => keys[0xE] = true,
+                    Key::KEY_V => keys[0xF] = true,
                     _ => (),
                 }
             }
@@ -254,6 +322,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 PrintStyledContent(style_number(0x0, keys)),
                 PrintStyledContent(style_number(0xB, keys)),
                 PrintStyledContent(style_number(0xF, keys)),
+                ResetColor
             )?;
 
             if chip8.delay > 0 {
@@ -264,12 +333,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     sink.play();
                 }
                 chip8.sound -= 1;
-            } else {
-                if !sink.is_paused() {
-                    sink.pause();
-                }
+            } else if !sink.is_paused() {
+                sink.pause();
             }
-            //stdout.execute(Clear(terminal::ClearType::All))?;
             stdout
                 .queue(cursor::MoveTo(0, 2))?
                 .queue(Print(format!("╔{:═<128}╗", "")))?;
@@ -299,13 +365,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for _ in 0..12 {
                 // Fetch
                 let op = Opcode::from_slice(&chip8.memory[chip8.pc as usize..]);
-                // stdout.execute(cursor::MoveTo(0, 0))?;
-                // stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-                // stdout.execute(Print(format!(
-                //     "{:02X}{:02X}",
-                //     chip8.memory[chip8.pc as usize],
-                //     chip8.memory[chip8.pc as usize + 1]
-                // )))?;
+
                 chip8.pc += 2;
                 // Decode and Execute
                 match op {
@@ -419,7 +479,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         n3: 0x1,
                         a: _,
                         v: _,
-                    } => chip8.v[x as usize] |= chip8.v[y as usize], // ORR
+                    } => {
+                        chip8.v[x as usize] |= chip8.v[y as usize];
+                        chip8.v[0xF] = 0
+                    } // ORR
                     Opcode {
                         n0: 0x8,
                         n1: x,
@@ -427,7 +490,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         n3: 0x2,
                         a: _,
                         v: _,
-                    } => chip8.v[x as usize] &= chip8.v[y as usize], // AND
+                    } => {
+                        chip8.v[x as usize] &= chip8.v[y as usize];
+                        chip8.v[0xF] = 0
+                    } // AND
                     Opcode {
                         n0: 0x8,
                         n1: x,
@@ -435,7 +501,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         n3: 0x3,
                         a: _,
                         v: _,
-                    } => chip8.v[x as usize] ^= chip8.v[y as usize], // XOR
+                    } => {
+                        chip8.v[x as usize] ^= chip8.v[y as usize];
+                        chip8.v[0xF] = 0
+                    } // XOR
                     Opcode {
                         n0: 0x8,
                         n1: x,
@@ -474,9 +543,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     } => {
                         let x = x as usize;
                         let y = y as usize;
-                        let (value, carry) = chip8.v[y].overflowing_shr(1);
+                        let carry = chip8.v[y] & 0x1;
+                        let value = chip8.v[y] >> 1;
                         chip8.v[x] = value;
-                        chip8.v[0xF] = carry as u8;
+                        chip8.v[0xF] = carry;
                     } // RSH
                     Opcode {
                         n0: 0x8,
@@ -502,9 +572,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     } => {
                         let x = x as usize;
                         let y = y as usize;
-                        let (value, carry) = chip8.v[y].overflowing_shl(1);
+                        let carry = (chip8.v[y] & 0b1000_0000) >> 7;
+                        let value = chip8.v[y] << 1;
                         chip8.v[x] = value;
-                        chip8.v[0xF] = carry as u8;
+                        chip8.v[0xF] = carry;
                     } // LSH
                     Opcode {
                         n0: 0x9,
@@ -564,7 +635,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                             // First, put the sprite at coord 0 (bit 32) by lshifting it 32 (pad) + 64 (screen width) - 8 (byte width)
                             // 00000000000000000000000000000000|SSSSSSSS00000000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
-                            let sprite = (chip8.memory[i] as u128) << 32 + 64 - 8;
+                            let sprite = (chip8.memory[i] as u128) << (32 + 64 - 8);
 
                             // Then rshift it to it's proper x position
                             // 00000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000|00000000000000000000000000000000
@@ -573,11 +644,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                             // Then do an overflow aware rshift of 32 to squish the display 64 into the lower 64
                             //0000000000000000000000000000000000000000000000000000000000000000|000SSSSSSSS00000000000000000000000000000000000000000000000000000
-                            let (mask, _) = sprite.overflowing_shr(32);
+                            let mask = sprite.rotate_right(32);
 
                             //Then grab only the 64 bits we care about
                             //000SSSSSSSS00000000000000000000000000000000000000000000000000000
-                            let mask = (mask & 0xFFFF_FFFF__FFFF_FFFF) as u64;
+                            let mask = (mask & 0xFFFF_FFFF_FFFF_FFFF) as u64;
 
                             chip8.v[0xF] = if mask & chip8.display[coord_y] > 0 {
                                 0x1
@@ -675,7 +746,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         n3: 0x9,
                         a: _,
                         v: _,
-                    } => chip8.i = font_addr[chip8.v[x as usize] as usize & 0x0F], // RCH
+                    } => chip8.i = FONT_ADDR[chip8.v[x as usize] as usize & 0x0F], // RCH
                     Opcode {
                         n0: 0xF,
                         n1: x,
@@ -720,7 +791,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    terminal::disable_raw_mode()?;
-    stdout.execute(terminal::LeaveAlternateScreen)?;
+
     Ok(())
 }
